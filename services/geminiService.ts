@@ -1,29 +1,97 @@
 
-import { GoogleGenAI, Type, Modality } from "@google/genai";
+import { GoogleGenAI, Type, Modality, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { BrandIdentity, GeneratedImage, FormData } from "../types";
 
-const getClient = () => new GoogleGenAI({ apiKey: process.env.API_KEY });
+type RetryOptions = { attempts?: number; baseDelay?: number; allowResourceExhausted?: boolean };
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+const isQuotaZero = (err: any) => {
+  const message: string = err?.message ?? err?.error?.message ?? "";
+  return message.includes("limit: 0") || message.toLowerCase().includes("quota exceeded");
+};
+
+const isRetryableError = (err: any, allowResourceExhausted = true) => {
+  const code = err?.code ?? err?.status ?? err?.error?.code;
+  const status = err?.error?.status ?? err?.status;
+  const message: string = err?.message ?? err?.error?.message ?? "";
+
+  // If quota is zero or not allowed to retry resource exhaustion, bail out fast
+  if (!allowResourceExhausted && (code === 429 || status === "RESOURCE_EXHAUSTED")) return false;
+  if (isQuotaZero(err)) return false;
+
+  return (
+    code === 503 ||
+    status === "UNAVAILABLE" ||
+    message.includes("overloaded") ||
+    code === 429 ||
+    status === "RESOURCE_EXHAUSTED"
+  );
+};
+
+const withRetry = async <T>(
+  fn: () => Promise<T>,
+  { attempts = 3, baseDelay = 800, allowResourceExhausted = true }: RetryOptions = {}
+): Promise<T> => {
+  let lastError: any;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err: any) {
+      lastError = err;
+      if (!isRetryableError(err, allowResourceExhausted) || i === attempts - 1) {
+        throw err;
+      }
+      const delay = baseDelay * Math.pow(2, i) + Math.random() * 200;
+      await sleep(delay);
+    }
+  }
+  throw lastError;
+};
+
+const getClient = () => {
+  const apiKey = import.meta.env.VITE_API_KEY;
+
+  if (!apiKey) {
+    throw new Error("Missing VITE_API_KEY. Please set it in your environment.");
+  }
+
+  return new GoogleGenAI({ apiKey });
+};
+
+class ImageQuotaError extends Error {
+  code = "IMAGE_QUOTA_EXCEEDED";
+  retryAfterSeconds?: number;
+  constructor(message: string, retryAfterSeconds?: number) {
+    super(message);
+    this.retryAfterSeconds = retryAfterSeconds;
+  }
+}
+
+let imageQuotaBlocked = false;
 
 export const validateLocation = async (locationInput: string): Promise<{ isValid: boolean; normalizedName: string }> => {
   const ai = getClient();
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: `Validate if the following location is a real, recognized place (city, state, or country). 
+  const response = await withRetry(() =>
+    ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: `Validate if the following location is a real, recognized place (city, state, or country). 
     Input: "${locationInput}". 
     If it is real, return the formal English name (e.g., "nyc" -> "New York, NY, USA"). 
     If it is fictional or nonsense (e.g., "SnowTown", "Narnia", "Gothamburg"), mark as invalid.`,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          isValid: { type: Type.BOOLEAN },
-          normalizedName: { type: Type.STRING }
-        },
-        required: ["isValid", "normalizedName"]
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            isValid: { type: Type.BOOLEAN },
+            normalizedName: { type: Type.STRING }
+          },
+          required: ["isValid", "normalizedName"]
+        }
       }
-    }
-  });
+    })
+  );
 
   if (!response.text) return { isValid: false, normalizedName: locationInput };
   return JSON.parse(response.text);
@@ -80,73 +148,75 @@ export const generateBrandIdentity = async (form: FormData): Promise<BrandIdenti
     - The 'visualPrompt' MUST instruct to place the company logo naturally in the scene (e.g., on a wall, on a card, on the packaging).
   `;
 
-  const response = await ai.models.generateContent({
-    model: "gemini-2.5-flash",
-    contents: basePrompt,
-    config: {
-      responseMimeType: "application/json",
-      responseSchema: {
-        type: Type.OBJECT,
-        properties: {
-          companyName: { type: Type.STRING },
-          slogan: { type: Type.STRING },
-          description: { type: Type.STRING, description: "Executive summary" },
-          locationValid: { type: Type.BOOLEAN },
-          normalizedLocation: { type: Type.STRING },
-          businessType: { type: Type.STRING, enum: ["Service", "Product"] },
-          colorPalette: { 
-            type: Type.ARRAY, 
-            items: { type: Type.STRING } 
-          },
-          logoStyle: { type: Type.STRING },
-          products: {
-            type: Type.ARRAY,
-            items: {
+  const response = await withRetry(() =>
+    ai.models.generateContent({
+      model: "gemini-2.5-flash",
+      contents: basePrompt,
+      config: {
+        responseMimeType: "application/json",
+        responseSchema: {
+          type: Type.OBJECT,
+          properties: {
+            companyName: { type: Type.STRING },
+            slogan: { type: Type.STRING },
+            description: { type: Type.STRING, description: "Executive summary" },
+            locationValid: { type: Type.BOOLEAN },
+            normalizedLocation: { type: Type.STRING },
+            businessType: { type: Type.STRING, enum: ["Service", "Product"] },
+            colorPalette: { 
+              type: Type.ARRAY, 
+              items: { type: Type.STRING } 
+            },
+            logoStyle: { type: Type.STRING },
+            products: {
+              type: Type.ARRAY,
+              items: {
+                type: Type.OBJECT,
+                properties: {
+                  name: { type: Type.STRING },
+                  description: { type: Type.STRING },
+                  price: { type: Type.NUMBER },
+                  visualPrompt: { type: Type.STRING }
+                },
+                required: ["name", "description", "price", "visualPrompt"]
+              }
+            },
+            budgetPlan: {
               type: Type.OBJECT,
               properties: {
-                name: { type: Type.STRING },
-                description: { type: Type.STRING },
-                price: { type: Type.NUMBER },
-                visualPrompt: { type: Type.STRING }
+                items: {
+                  type: Type.ARRAY,
+                  items: {
+                    type: Type.OBJECT,
+                    properties: {
+                      category: { type: Type.STRING },
+                      item: { type: Type.STRING },
+                      cost: { type: Type.NUMBER },
+                      frequency: { type: Type.STRING, enum: ["One-time", "Monthly", "Yearly"] },
+                      reasoning: { type: Type.STRING },
+                      searchQuery: { type: Type.STRING }
+                    },
+                    required: ["category", "item", "cost", "frequency", "reasoning", "searchQuery"]
+                  }
+                },
+                totalEstimatedMonthly: { type: Type.NUMBER },
+                totalOneTimeStartup: { type: Type.NUMBER },
+                estimatedMonthlyRevenue: { type: Type.NUMBER },
+                breakEvenMonths: { type: Type.NUMBER },
+                advice: { type: Type.STRING },
+                currency: { type: Type.STRING },
+                isFeasible: { type: Type.BOOLEAN },
+                suggestedMinimumBudget: { type: Type.NUMBER },
+                missingBudget: { type: Type.NUMBER }
               },
-              required: ["name", "description", "price", "visualPrompt"]
+              required: ["items", "totalEstimatedMonthly", "totalOneTimeStartup", "estimatedMonthlyRevenue", "breakEvenMonths", "advice", "currency", "isFeasible", "suggestedMinimumBudget", "missingBudget"]
             }
           },
-          budgetPlan: {
-            type: Type.OBJECT,
-            properties: {
-              items: {
-                type: Type.ARRAY,
-                items: {
-                  type: Type.OBJECT,
-                  properties: {
-                    category: { type: Type.STRING },
-                    item: { type: Type.STRING },
-                    cost: { type: Type.NUMBER },
-                    frequency: { type: Type.STRING, enum: ["One-time", "Monthly", "Yearly"] },
-                    reasoning: { type: Type.STRING },
-                    searchQuery: { type: Type.STRING }
-                  },
-                  required: ["category", "item", "cost", "frequency", "reasoning", "searchQuery"]
-                }
-              },
-              totalEstimatedMonthly: { type: Type.NUMBER },
-              totalOneTimeStartup: { type: Type.NUMBER },
-              estimatedMonthlyRevenue: { type: Type.NUMBER },
-              breakEvenMonths: { type: Type.NUMBER },
-              advice: { type: Type.STRING },
-              currency: { type: Type.STRING },
-              isFeasible: { type: Type.BOOLEAN },
-              suggestedMinimumBudget: { type: Type.NUMBER },
-              missingBudget: { type: Type.NUMBER }
-            },
-            required: ["items", "totalEstimatedMonthly", "totalOneTimeStartup", "estimatedMonthlyRevenue", "breakEvenMonths", "advice", "currency", "isFeasible", "suggestedMinimumBudget", "missingBudget"]
-          }
-        },
-        required: ["companyName", "slogan", "description", "colorPalette", "products", "logoStyle", "budgetPlan", "locationValid", "normalizedLocation", "businessType"]
+          required: ["companyName", "slogan", "description", "colorPalette", "products", "logoStyle", "budgetPlan", "locationValid", "normalizedLocation", "businessType"]
+        }
       }
-    }
-  });
+    })
+  );
 
   if (!response.text) throw new Error("No text returned from Gemini");
   
@@ -166,13 +236,17 @@ export const generateBrandIdentity = async (form: FormData): Promise<BrandIdenti
       data.budgetPlan.missingBudget = Math.max(0, minBudget - userBudget);
   }
 
-  return data;
+ return data;
 };
 
 /**
  * Generates an image using gemini-2.5-flash-image.
  */
 export const generateImage = async (prompt: string, aspectRatio: string = "1:1", referenceImageBase64?: string): Promise<GeneratedImage> => {
+  if (imageQuotaBlocked) {
+    throw new ImageQuotaError("Image generation quota already exceeded for this API key.");
+  }
+
   const ai = getClient();
   
   const parts: any[] = [];
@@ -194,16 +268,30 @@ export const generateImage = async (prompt: string, aspectRatio: string = "1:1",
     });
   }
 
+  // Explicitly add aspect ratio instruction to the text, as flash-image sometimes ignores config
+  parts.push({ text: `Ensure the output image has a ${aspectRatio} aspect ratio.`});
+
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash-image',
-      contents: {
-        parts: parts,
-      },
-      config: {
-          responseModalities: [Modality.IMAGE],
-      },
-    });
+    const response = await withRetry(
+      () =>
+        ai.models.generateContent({
+          model: 'gemini-2.5-flash-image',
+          contents: {
+            parts: parts,
+          },
+          config: {
+              responseModalities: [Modality.IMAGE],
+              // Add safety settings to avoid strict blocking on free tier
+              safetySettings: [
+                { category: HarmCategory.HARM_CATEGORY_HARASSMENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_HATE_SPEECH, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+                { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_ONLY_HIGH },
+              ]
+          },
+        }),
+      { allowResourceExhausted: false }
+    );
 
     const part = response.candidates?.[0]?.content?.parts?.[0];
     if (part && part.inlineData) {
@@ -214,6 +302,18 @@ export const generateImage = async (prompt: string, aspectRatio: string = "1:1",
     }
     throw new Error("No image generated.");
   } catch (e: any) {
+    const message: string = e?.message ?? e?.error?.message ?? "Image generation failed.";
+    const retryAfterMatch = message.match(/retry in\s+([\d.]+)s/i);
+    const retryAfterSeconds = retryAfterMatch ? Number(retryAfterMatch[1]) : undefined;
+
+    if (e?.code === 429 || e?.status === "RESOURCE_EXHAUSTED" || message.toLowerCase().includes("quota")) {
+      imageQuotaBlocked = true;
+      throw new ImageQuotaError(
+        "Image generation quota exceeded for this API key. Enable billing or wait for quota reset.",
+        retryAfterSeconds
+      );
+    }
+
     console.error("Image generation failed:", e);
     throw e;
   }

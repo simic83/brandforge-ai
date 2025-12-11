@@ -24,6 +24,8 @@ const App: React.FC = () => {
   const [brandData, setBrandData] = useState<BrandIdentity | null>(null);
   const [logoImage, setLogoImage] = useState<GeneratedImage | null>(null);
   const [isLogoGenerating, setIsLogoGenerating] = useState(false);
+  const [imageQuotaReached, setImageQuotaReached] = useState(false);
+  const [imageQuotaMessage, setImageQuotaMessage] = useState<string | null>(null);
   
   // State to persist product images across tab switches
   const [productImages, setProductImages] = useState<Record<number, GeneratedImage>>({});
@@ -41,6 +43,8 @@ const App: React.FC = () => {
     setBrandData(null);
     setLogoImage(null);
     setProductImages({}); // Reset product images on new plan generation
+    setImageQuotaReached(false);
+    setImageQuotaMessage(null);
 
     try {
       const data = await generateBrandIdentity(form);
@@ -68,6 +72,11 @@ const App: React.FC = () => {
       setLogoImage(img);
     } catch (err) {
       console.error("Logo generation failed", err);
+      if ((err as any)?.code === "IMAGE_QUOTA_EXCEEDED") {
+        const msg = (err as any)?.message || "Image generation quota exceeded for this API key. Enable billing or wait for reset.";
+        setImageQuotaReached(true);
+        setImageQuotaMessage(msg);
+      }
     } finally {
       setIsLogoGenerating(false);
     }
@@ -116,6 +125,12 @@ const App: React.FC = () => {
 
         {brandData && (
           <div className="max-w-6xl mx-auto p-8 sm:p-12 animate-fade-in pb-20">
+            
+            {imageQuotaReached && (
+              <div className="mb-6 p-4 rounded-xl border border-amber-200 bg-amber-50 text-amber-800 text-sm">
+                {imageQuotaMessage || "Image generation quota has been reached for this API key. Logos and product renders are paused until quota resets or billing is enabled."}
+              </div>
+            )}
             
             {/* Header Card */}
             <div className="bg-white border border-slate-200 rounded-2xl p-8 mb-8 shadow-sm">
@@ -213,6 +228,11 @@ const App: React.FC = () => {
                                 currency={brandData.budgetPlan.currency}
                                 businessType={brandData.businessType}
                                 location={brandData.normalizedLocation || form.location}
+                                imageQuotaReached={imageQuotaReached}
+                                onImageQuotaExceeded={(msg) => {
+                                  setImageQuotaReached(true);
+                                  setImageQuotaMessage(msg);
+                                }}
                             />
                         ))}
                     </div>

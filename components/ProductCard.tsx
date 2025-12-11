@@ -15,14 +15,17 @@ interface ProductCardProps {
   currency: string;
   businessType: 'Service' | 'Product';
   location: string;
+  imageQuotaReached: boolean;
+  onImageQuotaExceeded: (message: string) => void;
 }
 
-export const ProductCard: React.FC<ProductCardProps> = ({ product, logoStyle, companyName, image, onImageGenerated, logoImage, currency, businessType, location }) => {
+export const ProductCard: React.FC<ProductCardProps> = ({ product, logoStyle, companyName, image, onImageGenerated, logoImage, currency, businessType, location, imageQuotaReached, onImageQuotaExceeded }) => {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(false);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   const handleGenerate = async () => {
-    if (loading) return;
+    if (loading || imageQuotaReached) return;
     setLoading(true);
     setError(false);
     try {
@@ -57,16 +60,23 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, logoStyle, co
     } catch (e) {
       console.error(e);
       setError(true);
+      if ((e as any)?.code === "IMAGE_QUOTA_EXCEEDED") {
+        const msg = (e as any)?.message || "Image quota exceeded for this API key. Enable billing or wait for reset.";
+        setErrorMessage(msg);
+        onImageQuotaExceeded(msg);
+      } else {
+        setErrorMessage("Generation failed. Please retry.");
+      }
     } finally {
       setLoading(false);
     }
   };
 
   useEffect(() => {
-    if (!image && !loading && !error) {
+    if (!image && !loading && !error && !imageQuotaReached) {
         handleGenerate();
     }
-  }, [product, image]);
+  }, [product, image, imageQuotaReached]);
 
   const formatPrice = (price: number) => {
       return new Intl.NumberFormat('en-US', {
@@ -100,7 +110,7 @@ export const ProductCard: React.FC<ProductCardProps> = ({ product, logoStyle, co
                <>
                  {error ? (
                    <div className="text-center px-4">
-                     <p className="text-red-500 text-xs mb-2">Generation failed</p>
+                     <p className="text-red-500 text-xs mb-2">{errorMessage || "Generation failed"}</p>
                      <Button onClick={handleGenerate} size="sm" variant="ghost" icon={<RefreshCw className="w-3 h-3"/>}>Retry</Button>
                    </div>
                  ) : (
