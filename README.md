@@ -1,20 +1,26 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# BrandForge.ai
 
-# Run and deploy your AI Studio app
+BrandForge.ai je pametni AI asistent dizajniran da ubrza i olakša razvoj poslovnih ideja.  
+Pruža kompletan mini–branding paket na osnovu kratkog opisa biznisa — idealno za preduzetnike, startape i kreatore novih proizvoda.
 
-This contains everything you need to run your app locally.
+## 🎯 Šta radi?
 
-View your app in AI Studio: https://ai.studio/apps/drive/15wHrV1aElfTHnAOoL1fdAKUWkq5QsunK
+- **Generiše naziv biznisa** na osnovu opisa ideje  
+- **Kreira tri proizvoda/usluge** sa pripadajućim slikama  
+- **Procеnjuje da li je budžet dovoljan** za pokretanje posla  
+- **Daje personalizovan savet** za dalji razvoj  
+- **Generiše logo kompanije** u skladu sa vizijom
 
-## Run Locally
+Sve funkcionalnosti rade u jednom AI prolazu, bez potrebe za dodatnim podešavanjima.
 
-**Prerequisites:**  Node.js
+## 🚀 Kako koristiti?
 
+1. Unesite opis ideje (delatnost, ciljna publika, stil brenda…).  
+2. Aplikacija automatski generiše kompletne predloge.  
+3. Pregledajte rezultate i preuzmite vizuale/logotip.  
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+## 📦 Tehnologije
+
+- Python / Node (u zavisnosti od implementacije)  
+- OpenAI / generativni modeli  
+- API za generisanje slika i logotipa  
