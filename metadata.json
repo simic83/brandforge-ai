@@ -1,0 +1,5 @@
+{
+  "name": "BrandForge AI",
+  "description": "A comprehensive brand creation suite that generates company names, slogans, logos, and product mockups using Gemini 2.5 and Imagen 4.",
+  "requestFramePermissions": []
+}
